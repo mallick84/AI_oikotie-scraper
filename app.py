@@ -119,120 +119,124 @@ if st.button("🚀 Start Scraping"):
 
     st.info(f"Starting scraper... {'(Using Temporary Cloud Storage)' if storage_is_temporary else f'Saving to: `{destination_folder}`'}")
 
-    # We use a context manager for temp dir so it cleans up automatically
-    with tempfile.TemporaryDirectory() if storage_is_temporary else open(__file__) as temp_dir:
-        # If open(__file__) was used, temp_dir is just a file object, we ignore it
-        if storage_is_temporary:
-            working_dest = temp_dir
-        else:
-            working_dest = destination_folder
+    try:
+        # We use a context manager for temp dir so it cleans up automatically
+        with tempfile.TemporaryDirectory() if storage_is_temporary else open(__file__) as temp_dir:
+            # If open(__file__) was used, temp_dir is just a file object, we ignore it
+            if storage_is_temporary:
+                working_dest = temp_dir
+            else:
+                working_dest = destination_folder
 
-        # Progress containers
-        progress_bar = st.progress(0)
-        status_text = st.empty()
-        data_container = st.empty()
-        
-        scraper = OikotieScraper()
-        results = []
-        
-        try:
-            with st.spinner("Initializing browser..."):
-                scraper.start_browser(headless=True)
-                
-            status_text.text("Fetching property links...")
-            links = scraper.get_property_links(limit=num_properties)
-            st.write(f"Found {len(links)} properties.")
+            # Progress containers
+            progress_bar = st.progress(0)
+            status_text = st.empty()
+            data_container = st.empty()
             
-            for i, link in enumerate(links):
-                status_text.text(f"Processing property {i+1}/{len(links)}: {link}")
+            scraper = OikotieScraper()
+            results = []
+            
+            try:
+                with st.spinner("Initializing browser..."):
+                    scraper.start_browser(headless=True)
+                    
+                status_text.text("Fetching property links...")
+                links = scraper.get_property_links(limit=num_properties)
+                st.write(f"Found {len(links)} properties.")
                 
-                # Scrape details
-                try:
-                    details = scraper.extract_property_details(link)
+                for i, link in enumerate(links):
+                    status_text.text(f"Processing property {i+1}/{len(links)}: {link}")
                     
-                    # Basic ID from URL
-                    prop_id = link.split('/')[-1]
-                    # Use the working destination (could be temp or local)
-                    prop_folder = os.path.join(working_dest, prop_id)
+                    # Scrape details
+                    try:
+                        details = scraper.extract_property_details(link)
+                        
+                        # Basic ID from URL
+                        prop_id = link.split('/')[-1]
+                        # Use the working destination (could be temp or local)
+                        prop_folder = os.path.join(working_dest, prop_id)
+                        
+                        # Download images (Categorized)
+                        status_text.text(f"Downloading images for {prop_id} (Sorting normal vs floor plans)...")
+                        img_count = scraper.download_images(details.get("image_data", []), prop_folder)
+                        details["images_downloaded"] = img_count
+                        details["local_folder"] = prop_folder
+                        
+                        # Clean up complex data for CSV/Table
+                        row_data = details.copy()
+                        if "image_data" in row_data: del row_data["image_data"]
+                        if "image_urls" in row_data: del row_data["image_urls"]
+                        results.append(row_data)
+                        
+                    except Exception as e:
+                        st.error(f"Error processing {link}: {e}")
                     
-                    # Download images (Categorized)
-                    status_text.text(f"Downloading images for {prop_id} (Sorting normal vs floor plans)...")
-                    img_count = scraper.download_images(details.get("image_data", []), prop_folder)
-                    details["images_downloaded"] = img_count
-                    details["local_folder"] = prop_folder
+                    # Update progress
+                    progress = (i + 1) / len(links)
+                    progress_bar.progress(progress)
                     
-                    # Clean up complex data for CSV/Table
-                    row_data = details.copy()
-                    if "image_data" in row_data: del row_data["image_data"]
-                    if "image_urls" in row_data: del row_data["image_urls"]
-                    results.append(row_data)
-                    
-                except Exception as e:
-                    st.error(f"Error processing {link}: {e}")
-                
-                # Update progress
-                progress = (i + 1) / len(links)
-                progress_bar.progress(progress)
-                
-                # Update dashboard table
+                    # Update dashboard table
+                    if results:
+                        df = pd.DataFrame(results)
+                        # Filter if search query exists
+                        if search_query:
+                            df = df[df.astype(str).apply(lambda x: x.str.contains(search_query, case=False)).any(axis=1)]
+                        data_container.dataframe(df)
+
+                # Final Dashboard & Export
                 if results:
-                    df = pd.DataFrame(results)
-                    # Filter if search query exists
+                    st.divider()
+                    st.header("📊 Results Dashboard")
+                    
+                    final_df = pd.DataFrame(results)
+                    
+                    # Search filter again for final display
+                    display_df = final_df.copy()
                     if search_query:
-                        df = df[df.astype(str).apply(lambda x: x.str.contains(search_query, case=False)).any(axis=1)]
-                    data_container.dataframe(df)
+                        display_df = display_df[display_df.astype(str).apply(lambda x: x.str.contains(search_query, case=False)).any(axis=1)]
+                    
+                    st.dataframe(display_df)
+                    
+                    col_export_1, col_export_2, col_export_3 = st.columns(3)
+                    with col_export_1:
+                        excel_data = to_excel(final_df)
+                        st.download_button(
+                            label="📥 Download Excel",
+                            data=excel_data,
+                            file_name="oikotie_properties.xlsx",
+                            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                            use_container_width=True
+                        )
+                    with col_export_2:
+                        csv = final_df.to_csv(index=False).encode('utf-8')
+                        st.download_button(
+                            label="📄 Download CSV",
+                            data=csv,
+                            file_name="oikotie_properties.csv",
+                            mime="text/csv",
+                            use_container_width=True
+                        )
+                    with col_export_3:
+                        # Create ZIP from the working destination
+                        zip_data = create_zip(working_dest)
+                        st.download_button(
+                            label="📦 Download All (ZIP)",
+                            data=zip_data,
+                            file_name="scraped_oikotie_data.zip",
+                            mime="application/zip",
+                            use_container_width=True
+                        )
 
-            # Final Dashboard & Export
-            if results:
-                st.divider()
-                st.header("📊 Results Dashboard")
+                    st.divider()
+                    st.balloons()
+                    st.success("🎉 SCRAPING COMPLETE!")
+                    if storage_is_temporary:
+                        st.warning("⚠️ **Cloud Storage Notice**: These files are in temporary storage and will be DELETED when you refresh or close this page. Please download the ZIP now!")
+                    else:
+                        st.write(f"📁 Files saved in: `{working_dest}`")
                 
-                final_df = pd.DataFrame(results)
-                
-                # Search filter again for final display
-                display_df = final_df.copy()
-                if search_query:
-                    display_df = display_df[display_df.astype(str).apply(lambda x: x.str.contains(search_query, case=False)).any(axis=1)]
-                
-                st.dataframe(display_df)
-                
-                col_export_1, col_export_2, col_export_3 = st.columns(3)
-                with col_export_1:
-                    excel_data = to_excel(final_df)
-                    st.download_button(
-                        label="📥 Download Excel",
-                        data=excel_data,
-                        file_name="oikotie_properties.xlsx",
-                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                        use_container_width=True
-                    )
-                with col_export_2:
-                    csv = final_df.to_csv(index=False).encode('utf-8')
-                    st.download_button(
-                        label="📄 Download CSV",
-                        data=csv,
-                        file_name="oikotie_properties.csv",
-                        mime="text/csv",
-                        use_container_width=True
-                    )
-                with col_export_3:
-                    # Create ZIP from the working destination
-                    zip_data = create_zip(working_dest)
-                    st.download_button(
-                        label="📦 Download All (ZIP)",
-                        data=zip_data,
-                        file_name="scraped_oikotie_data.zip",
-                        mime="application/zip",
-                        use_container_width=True
-                    )
-
-                st.divider()
-                st.balloons()
-                st.success("🎉 SCRAPING COMPLETE!")
-                if storage_is_temporary:
-                    st.warning("⚠️ **Cloud Storage Notice**: These files are in temporary storage and will be DELETED when you refresh or close this page. Please download the ZIP now!")
-                else:
-                    st.write(f"📁 Files saved in: `{working_dest}`")
+            except Exception as e:
+                st.error(f"An error occurred during extraction: {e}")
             
     except Exception as e:
         st.error(f"An error occurred: {e}")
