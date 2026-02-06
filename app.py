@@ -101,14 +101,22 @@ with st.sidebar:
     search_query = st.text_input("Search in results", "")
 
 if st.button("🚀 Start Scraping"):
-    st.info("Starting scraper... This might take a moment to initialize the browser.")
+    # Neutralize invalid absolute paths before starting
+    if os.path.isabs(destination_folder):
+        parent = os.path.dirname(destination_folder)
+        if not os.path.exists(parent):
+            # If it's an absolute path from a different OS (like /Users on Linux)
+            # just silently use a safe relative folder to avoid the Errno 13 error.
+            destination_folder = "scraped_data"
+
+    st.info(f"Starting scraper... Saving to: `{destination_folder}`")
     
-    # Ensure the destination folder exists relative to the current working directory
+    # Ensure the destination folder exists
     if not os.path.exists(destination_folder):
         try:
             os.makedirs(destination_folder, exist_ok=True)
-        except Exception as e:
-            st.error(f"Could not create destination folder: {e}. Defaulting to 'data'.")
+        except Exception:
+            # Silent fallback to dynamic 'data' folder if still stuck
             destination_folder = "data"
             os.makedirs(destination_folder, exist_ok=True)
 
