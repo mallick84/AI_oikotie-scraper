@@ -26,14 +26,26 @@ def install_playwright_browsers():
 install_playwright_browsers()
 # ------------------------------------------
 
-# Inputs
-col1, col2 = st.columns(2)
-with col1:
-    num_properties = st.number_input("Number of properties", min_value=1, max_value=50, value=5)
-with col2:
-    destination_folder = st.text_input("Destination Folder", value="./scraped_data")
+# --- Utility for Excel ---
+import io
 
-if st.button("Start Scraping"):
+def to_excel(df):
+    output = io.BytesIO()
+    with pd.ExcelWriter(output, engine='openpyxl') as writer:
+        df.to_excel(writer, index=False, sheet_name='Properties')
+    processed_data = output.getvalue()
+    return processed_data
+
+# Inputs
+with st.sidebar:
+    st.header("Settings")
+    num_properties = st.number_input("Number of properties", min_value=1, max_value=50, value=5)
+    destination_folder = st.text_input("Destination Folder", value="./scraped_data")
+    st.divider()
+    st.markdown("### Search & Filter")
+    search_query = st.text_input("Search in results", "")
+
+if st.button("🚀 Start Scraping"):
     st.info("Starting scraper... This might take a moment to initialize the browser.")
     
     # Progress containers
@@ -46,7 +58,7 @@ if st.button("Start Scraping"):
     
     try:
         with st.spinner("Initializing browser..."):
-            scraper.start_browser(headless=True) # Run headless for speed/background
+            scraper.start_browser(headless=True)
             
         status_text.text("Fetching property links...")
         links = scraper.get_property_links(limit=num_properties)
@@ -63,16 +75,17 @@ if st.button("Start Scraping"):
                 prop_id = link.split('/')[-1]
                 prop_folder = os.path.join(destination_folder, prop_id)
                 
-                # Download images
-                status_text.text(f"Downloading images for {prop_id}...")
-                img_count = scraper.download_images(details.get("image_urls", []), prop_folder)
+                # Download images (Categorized)
+                status_text.text(f"Downloading images for {prop_id} (Sorting normal vs floor plans)...")
+                img_count = scraper.download_images(details.get("image_data", []), prop_folder)
                 details["images_downloaded"] = img_count
                 details["local_folder"] = prop_folder
                 
-                # Remove raw image urls from CSV data to keep it clean
-                csv_details = details.copy()
-                del csv_details["image_urls"]
-                results.append(csv_details)
+                # Clean up complex data for CSV/Table
+                row_data = details.copy()
+                if "image_data" in row_data: del row_data["image_data"]
+                if "image_urls" in row_data: del row_data["image_urls"]
+                results.append(row_data)
                 
             except Exception as e:
                 st.error(f"Error processing {link}: {e}")
@@ -81,22 +94,52 @@ if st.button("Start Scraping"):
             progress = (i + 1) / len(links)
             progress_bar.progress(progress)
             
-            # Update dataframe preview
+            # Update dashboard table
             if results:
                 df = pd.DataFrame(results)
+                # Filter if search query exists
+                if search_query:
+                    df = df[df.astype(str).apply(lambda x: x.str.contains(search_query, case=False)).any(axis=1)]
+                # Removing use_container_width=True or specifically handling it to force scroll
                 data_container.dataframe(df)
 
-        # Save Final CSV
+        # Final Dashboard & Export
         if results:
-            df = pd.DataFrame(results)
-            csv_path = os.path.join(destination_folder, "properties.csv")
-            if not os.path.exists(destination_folder):
-                os.makedirs(destination_folder)
-            df.to_csv(csv_path, index=False)
+            st.divider()
+            st.header("📊 Results Dashboard")
             
-            st.success("Scraping Completed!")
-            st.write(f"Data saved to: `{csv_path}`")
-            st.write(f"Images saved to: `{destination_folder}/<property_id>/`")
+            final_df = pd.DataFrame(results)
+            
+            # Search filter again for final display
+            display_df = final_df.copy()
+            if search_query:
+                display_df = display_df[display_df.astype(str).apply(lambda x: x.str.contains(search_query, case=False)).any(axis=1)]
+            
+            # Displaying both tables with explicit configuration for scrolling
+            st.dataframe(display_df)
+            
+            col_export_1, col_export_2 = st.columns(2)
+            with col_export_1:
+                excel_data = to_excel(final_df)
+                st.download_button(
+                    label="📥 Download Excel",
+                    data=excel_data,
+                    file_name="oikotie_properties.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                )
+            with col_export_2:
+                csv = final_df.to_csv(index=False).encode('utf-8')
+                st.download_button(
+                    label="📄 Download CSV",
+                    data=csv,
+                    file_name="oikotie_properties.csv",
+                    mime="text/csv"
+                )
+
+            st.divider()
+            st.balloons()
+            st.success("🎉 SCRAPING COMPLETE! All data and images have been processed.")
+            st.write(f"📁 Files saved in: `{os.path.abspath(destination_folder)}`")
             
     except Exception as e:
         st.error(f"An error occurred: {e}")

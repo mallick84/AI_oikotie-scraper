@@ -2,3 +2,5 @@ streamlit
 playwright
 pandas
 requests
+openpyxl
+Pillow
