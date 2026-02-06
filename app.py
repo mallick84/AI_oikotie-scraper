@@ -66,14 +66,35 @@ with st.sidebar:
     except Exception:
         suggested_default = "scraped_data"
 
-    destination_folder = st.text_input("Destination Folder", value=suggested_default)
+    # Path Hints Section
+    with st.expander("ℹ️ How to provide a path?"):
+        st.markdown("""
+        **Local Mac/Linux**: 
+        `/Users/username/Downloads/oikotie`
+        
+        **Local Windows**: 
+        `C:\\Users\\username\\Downloads\\oikotie`
+        
+        **Streamlit Cloud**: 
+        Leave as `scraped_data`. (Note: Cloud servers cannot access your local computer's folders).
+        """)
+
+    destination_folder = st.text_input(
+        "Destination Folder", 
+        value=suggested_default,
+        help="Where images will be saved on the server. Local users can provide an absolute path."
+    )
     
-    # Sanitize: if the path is absolute but doesn't exist on this server environment
+    # Sanitize and warn
+    is_cloud = False
     if os.path.isabs(destination_folder):
         parent = os.path.dirname(destination_folder)
         if not os.path.exists(parent):
-            st.warning(f"Defaulting to relative path because '{parent}' is not accessible on this server.")
-            destination_folder = "scraped_data"
+            st.warning("⚠️ Absolute path not found. If you are on Streamlit Cloud, please use a simple folder name like 'scraped_data'.")
+            is_cloud = True
+    
+    if is_cloud or "share.streamlit.io" in st.experimental_get_query_params().keys(): # Basic cloud detection
+        st.info("☁️ **Running on Cloud**: You won't find files on your local Mac yet. After scraping, click the **ZIP Download** button at the bottom.")
 
     st.divider()
     st.markdown("### Search & Filter")
