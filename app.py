@@ -40,7 +40,17 @@ def to_excel(df):
 with st.sidebar:
     st.header("Settings")
     num_properties = st.number_input("Number of properties", min_value=1, max_value=50, value=5)
-    destination_folder = st.text_input("Destination Folder", value="./scraped_data")
+    
+    # Use a safe relative path by default
+    default_dir = "scraped_data"
+    destination_folder = st.text_input("Destination Folder", value=default_dir)
+    
+    # Sanitize: if user somehow has an absolute path from a different system (e.g. /Users/...)
+    # and we are on a system where that's not allowed/doesn't exist, force it to be relative.
+    if os.path.isabs(destination_folder) and not os.path.exists(os.path.dirname(destination_folder)):
+        st.warning(f"Absolute path '{destination_folder}' not found. Using relative path instead.")
+        destination_folder = default_dir
+
     st.divider()
     st.markdown("### Search & Filter")
     search_query = st.text_input("Search in results", "")
@@ -48,6 +58,15 @@ with st.sidebar:
 if st.button("🚀 Start Scraping"):
     st.info("Starting scraper... This might take a moment to initialize the browser.")
     
+    # Ensure the destination folder exists relative to the current working directory
+    if not os.path.exists(destination_folder):
+        try:
+            os.makedirs(destination_folder, exist_ok=True)
+        except Exception as e:
+            st.error(f"Could not create destination folder: {e}. Defaulting to 'data'.")
+            destination_folder = "data"
+            os.makedirs(destination_folder, exist_ok=True)
+
     # Progress containers
     progress_bar = st.progress(0)
     status_text = st.empty()
@@ -73,6 +92,7 @@ if st.button("🚀 Start Scraping"):
                 
                 # Basic ID from URL
                 prop_id = link.split('/')[-1]
+                # Ensure path is relative and safe
                 prop_folder = os.path.join(destination_folder, prop_id)
                 
                 # Download images (Categorized)
@@ -139,7 +159,7 @@ if st.button("🚀 Start Scraping"):
             st.divider()
             st.balloons()
             st.success("🎉 SCRAPING COMPLETE! All data and images have been processed.")
-            st.write(f"📁 Files saved in: `{os.path.abspath(destination_folder)}`")
+            st.write(f"📁 Files saved in the relative folder: `{destination_folder}`")
             
     except Exception as e:
         st.error(f"An error occurred: {e}")
