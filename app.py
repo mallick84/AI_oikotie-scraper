@@ -26,6 +26,19 @@ def install_playwright_browsers():
 install_playwright_browsers()
 # ------------------------------------------
 
+# --- Utility for ZIP ---
+import zipfile
+
+def create_zip(directory_path):
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
+        for root, dirs, files in os.walk(directory_path):
+            for file in files:
+                filepath = os.path.join(root, file)
+                arcname = os.path.relpath(filepath, directory_path)
+                z.write(filepath, arcname)
+    return buf.getvalue()
+
 # --- Utility for Excel ---
 import io
 
@@ -138,14 +151,15 @@ if st.button("🚀 Start Scraping"):
             # Displaying both tables with explicit configuration for scrolling
             st.dataframe(display_df)
             
-            col_export_1, col_export_2 = st.columns(2)
+            col_export_1, col_export_2, col_export_3 = st.columns(3)
             with col_export_1:
                 excel_data = to_excel(final_df)
                 st.download_button(
                     label="📥 Download Excel",
                     data=excel_data,
                     file_name="oikotie_properties.xlsx",
-                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    use_container_width=True
                 )
             with col_export_2:
                 csv = final_df.to_csv(index=False).encode('utf-8')
@@ -153,7 +167,17 @@ if st.button("🚀 Start Scraping"):
                     label="📄 Download CSV",
                     data=csv,
                     file_name="oikotie_properties.csv",
-                    mime="text/csv"
+                    mime="text/csv",
+                    use_container_width=True
+                )
+            with col_export_3:
+                zip_data = create_zip(destination_folder)
+                st.download_button(
+                    label="📦 Download All (ZIP)",
+                    data=zip_data,
+                    file_name="scraped_oikotie_data.zip",
+                    mime="application/zip",
+                    use_container_width=True
                 )
 
             st.divider()
