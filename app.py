@@ -52,7 +52,14 @@ def to_excel(df):
 # Inputs
 with st.sidebar:
     st.header("Settings")
-    num_properties = st.number_input("Number of properties", min_value=1, max_value=50, value=5)
+    num_properties = st.number_input(
+        "Number of properties", 
+        min_value=1, 
+        max_value=50, 
+        value=2,
+        help="Try to give minimum number of properties since it will be first download at cloud then you can download the zip."
+    )
+    st.warning("⚠️ **Note**: Since it will be first download at cloud then you can download the zip, so try by giving minimum number of properties.")
     
     # Cross-platform default Downloads folder
     from pathlib import Path
@@ -90,10 +97,21 @@ with st.sidebar:
     if os.path.isabs(destination_folder):
         parent = os.path.dirname(destination_folder)
         if not os.path.exists(parent):
-            st.warning("⚠️ Absolute path not found. If you are on Streamlit Cloud, please use a simple folder name like 'scraped_data'.")
+            # If it's an absolute path from a different OS (like /Users on Linux)
+            # just silently use a safe relative folder to avoid the Errno 13 error.
+            destination_folder = "scraped_data"
             is_cloud = True
     
-    if is_cloud or "share.streamlit.io" in st.experimental_get_query_params().keys(): # Basic cloud detection
+    # Detection: try accessing st.query_params safely
+    is_streamlit_cloud = False
+    try:
+        # Modern way to check for cloud/query params
+        if "share.streamlit.io" in str(st.query_params):
+            is_streamlit_cloud = True
+    except:
+        pass
+
+    if is_streamlit_cloud or is_cloud:
         st.info("☁️ **Running on Cloud**: You won't find files on your local Mac yet. After scraping, click the **ZIP Download** button at the bottom.")
 
     st.divider()
