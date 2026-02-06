@@ -54,15 +54,26 @@ with st.sidebar:
     st.header("Settings")
     num_properties = st.number_input("Number of properties", min_value=1, max_value=50, value=5)
     
-    # Use a safe relative path by default
-    default_dir = "scraped_data"
-    destination_folder = st.text_input("Destination Folder", value=default_dir)
+    # Cross-platform default Downloads folder
+    from pathlib import Path
+    try:
+        # Try system Downloads folder
+        suggested_default = str(Path.home() / "Downloads" / "oikotie_scraped_data")
+        # If on Streamlit Cloud, this might be restricted. Check if writable.
+        test_path = Path.home() / "Downloads"
+        if not os.access(str(test_path), os.W_OK):
+            suggested_default = "scraped_data"
+    except Exception:
+        suggested_default = "scraped_data"
+
+    destination_folder = st.text_input("Destination Folder", value=suggested_default)
     
-    # Sanitize: if user somehow has an absolute path from a different system (e.g. /Users/...)
-    # and we are on a system where that's not allowed/doesn't exist, force it to be relative.
-    if os.path.isabs(destination_folder) and not os.path.exists(os.path.dirname(destination_folder)):
-        st.warning(f"Absolute path '{destination_folder}' not found. Using relative path instead.")
-        destination_folder = default_dir
+    # Sanitize: if the path is absolute but doesn't exist on this server environment
+    if os.path.isabs(destination_folder):
+        parent = os.path.dirname(destination_folder)
+        if not os.path.exists(parent):
+            st.warning(f"Defaulting to relative path because '{parent}' is not accessible on this server.")
+            destination_folder = "scraped_data"
 
     st.divider()
     st.markdown("### Search & Filter")
