@@ -6,3 +6,4 @@ venv/
 .env
 debug_*.png
 test_scraper.py
+tessdata/

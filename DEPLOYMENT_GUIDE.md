@@ -15,6 +15,7 @@ You need to create a repository and push your code there.
 1.  **Create a New Repository** on GitHub (e.g., `oikotie-scraper`).
 2.  **Upload your files**:
     - Upload the contents of your `oikotie_scraper` folder (`app.py`, `scraper.py`, `requirements.txt`, `packages.txt`).
+    - **Important**: `packages.txt` MUST include `tesseract-ocr-fin` for the new floor plan filtering to work on the cloud.
     - *Alternatively, use git commands if you are familiar with them.*
 
 ## Step 2: Deploy on Streamlit Cloud

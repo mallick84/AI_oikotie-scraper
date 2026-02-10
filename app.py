@@ -5,29 +5,55 @@ from scraper import OikotieScraper
 
 st.set_page_config(page_title="Oikotie Scraper POC", page_icon="🏠")
 
-st.title("🏠 Oikotie Property Scraper")
-st.markdown("Download property images and details from Oikotie.")
-
 # --- Browser Setup for Cloud Deployment ---
 import subprocess
 import shutil
+
+# Custom Layout: Main Panel Only
+st.title("🏠 Oikotie Property Scraper")
+st.markdown("Download property images and details from Oikotie.")
+
+# --- Session State for Metrics ---
+if "processed_ids" not in st.session_state:
+    st.session_state.processed_ids = set()
+if "skipped_count" not in st.session_state:
+    st.session_state.skipped_count = 0
+if "floor_plan_count" not in st.session_state:
+    st.session_state.floor_plan_count = 0
+if "downloaded_count" not in st.session_state:
+    st.session_state.downloaded_count = 0
+if "total_images_count" not in st.session_state:
+    st.session_state.total_images_count = 0
+if "storage_usage" not in st.session_state:
+    st.session_state.storage_usage = 0.0
 
 @st.cache_resource
 def install_playwright_browsers():
     # check if chromium is installed
     try:
         # Just run the install command, it's fast if already installed
-        # st.info("Checking/Installing browser drivers...")
         subprocess.run(["playwright", "install", "chromium"], check=True)
-        # st.success("Browser drivers ready.")
     except Exception as e:
         st.error(f"Failed to install browser drivers: {e}")
 
 install_playwright_browsers()
 # ------------------------------------------
 
-# --- Utility for ZIP ---
+# --- Utility for ZIP & Excel ---
 import zipfile
+import io
+
+def get_dir_size(path):
+    total = 0
+    try:
+        for entry in os.scandir(path):
+            if entry.is_file():
+                total += entry.stat().st_size
+            elif entry.is_dir():
+                total += get_dir_size(entry.path)
+    except Exception:
+        pass
+    return total / (1024 * 1024) # MB
 
 def create_zip(directory_path):
     buf = io.BytesIO()
@@ -38,9 +64,6 @@ def create_zip(directory_path):
                 arcname = os.path.relpath(filepath, directory_path)
                 z.write(filepath, arcname)
     return buf.getvalue()
-
-# --- Utility for Excel ---
-import io
 
 def to_excel(df):
     output = io.BytesIO()
@@ -120,6 +143,23 @@ with st.sidebar:
 
 import tempfile
 
+# --- Live Status Table (Main Panel) ---
+st.markdown("### 📊 Live Scraper Status")
+status_table_placeholder = st.empty()
+
+# Initialize/Show Table
+def get_status_df():
+    return pd.DataFrame([{
+        "Status": "Ready",
+        "Floor Plans": st.session_state.floor_plan_count,
+        "Images": f"{st.session_state.downloaded_count}",
+        "Storage (MB)": f"{st.session_state.storage_usage:.2f}",
+        "Duplicates Skipped": st.session_state.skipped_count
+    }])
+
+status_table_placeholder.dataframe(get_status_df(), hide_index=True, use_container_width=True)
+
+
 if st.button("🚀 Start Scraping"):
     # Determine safe storage
     # If it's an absolute path provided by user, try to use it (local mode)
@@ -163,20 +203,74 @@ if st.button("🚀 Start Scraping"):
                 st.write(f"Found {len(links)} properties.")
                 
                 for i, link in enumerate(links):
+                    # Basic ID from URL
+                    prop_id = link.split('/')[-1]
+
+                    # Duplicate Check
+                    if prop_id in st.session_state.processed_ids:
+                        st.session_state.skipped_count += 1
+                        
+                        # Update Table
+                        live_df = pd.DataFrame([{
+                            "Status": f"Skipped Duplicate: {prop_id}",
+                            "Floor Plans": st.session_state.floor_plan_count,
+                            "Images": f"{st.session_state.downloaded_count}/{st.session_state.total_images_count}",
+                            "Storage (MB)": f"{st.session_state.storage_usage:.2f}",
+                            "Duplicates Skipped": st.session_state.skipped_count
+                        }])
+                        status_table_placeholder.dataframe(live_df, hide_index=True, use_container_width=True)
+                        
+                        status_text.text(f"Skipping duplicate {i+1}/{len(links)}: {prop_id}")
+                        continue
+                    
                     status_text.text(f"Processing property {i+1}/{len(links)}: {link}")
                     
                     # Scrape details
                     try:
                         details = scraper.extract_property_details(link)
                         
-                        # Basic ID from URL
-                        prop_id = link.split('/')[-1]
                         # Use the working destination (could be temp or local)
                         prop_folder = os.path.join(working_dest, prop_id)
                         
-                        # Download images (Categorized)
-                        status_text.text(f"Downloading images for {prop_id} (Sorting normal vs floor plans)...")
-                        img_count = scraper.download_images(details.get("image_data", []), prop_folder)
+                        # Define status update callback
+                        def update_status(data):
+                            current_status_msg = "Running..."
+                            
+                            if data["type"] == "progress":
+                                st.session_state.downloaded_count = data['current']
+                                st.session_state.total_images_count = data['total']
+                                current_status_msg = f"Downloading Image {data['current']}/{data['total']}"
+                                
+                                # Update memory usage periodically
+                                try:
+                                    if data['current'] % 2 == 0 or data['current'] == data['total']:
+                                        usage = get_dir_size(working_dest)
+                                        st.session_state.storage_usage = usage
+                                except:
+                                    pass
+                                    
+                            elif data["type"] == "filter":
+                                step = data.get("step")
+                                msg = data.get("msg")
+                                current_status_msg = f"Filter: {msg}"
+                                
+                                if step == 3:
+                                    st.session_state.floor_plan_count += 1
+                                    current_status_msg = "✅ Match Found!"
+
+                            # Update Table
+                            live_df = pd.DataFrame([{
+                                "Status": current_status_msg,
+                                "Floor Plans": st.session_state.floor_plan_count,
+                                "Images": f"{st.session_state.downloaded_count}/{st.session_state.total_images_count}",
+                                "Storage (MB)": f"{st.session_state.storage_usage:.2f}",
+                                "Duplicates Skipped": st.session_state.skipped_count
+                            }])
+                            status_table_placeholder.dataframe(live_df, hide_index=True, use_container_width=True)
+
+                        # Download images (Categorized) with callback
+                        status_text.text(f"Downloading images for {prop_id}...")
+                        img_count = scraper.download_images(details.get("image_data", []), prop_folder, status_callback=update_status)
                         details["images_downloaded"] = img_count
                         details["local_folder"] = prop_folder
                         
@@ -185,6 +279,9 @@ if st.button("🚀 Start Scraping"):
                         if "image_data" in row_data: del row_data["image_data"]
                         if "image_urls" in row_data: del row_data["image_urls"]
                         results.append(row_data)
+
+                        # Mark as processed
+                        st.session_state.processed_ids.add(prop_id)
                         
                     except Exception as e:
                         st.error(f"Error processing {link}: {e}")

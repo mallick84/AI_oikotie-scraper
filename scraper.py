@@ -11,6 +11,12 @@ class OikotieScraper:
         self.page = None
 
     def start_browser(self, headless=True):
+        # Set TESSDATA_PREFIX if local folder exists (Fix for missing system lang data)
+        local_tessdata = os.path.join(os.getcwd(), 'tessdata')
+        if os.path.exists(local_tessdata):
+            os.environ['TESSDATA_PREFIX'] = local_tessdata
+            # print(f"Using local Tesseract data: {local_tessdata}")
+
         self.playwright = sync_playwright().start()
         try:
             # Launch options - sometimes args help
@@ -297,4 +303,262 @@ class OikotieScraper:
                     count += 1
             except Exception as e:
                 print(f"Failed to download {url}: {e}")
+        return count
+
+    def analyze_floor_plan_content(self, filepath):
+        """
+        Analyzes image content using OCR and applies specific rules for Finnish floor plans.
+        Returns: (is_floor_plan: bool, reason: str)
+        """
+        try:
+            import pytesseract
+            from PIL import Image, ImageEnhance
+            import re
+            
+            img = Image.open(filepath)
+            
+            # Preprocessing: Upscale if small (helps with small text)
+            if img.width < 1500:
+                scale = 1500 / img.width
+                new_size = (int(img.width * scale), int(img.height * scale))
+                img = img.resize(new_size, Image.Resampling.LANCZOS)
+                
+            # Convert to greyscale for better OCR
+            img = img.convert('L')
+            
+            # Multi-pass OCR Strategy
+            # Pass 1: Finnish, Sparse Text (PSM 11) - Good for labels scattered around
+            # Pass 2: Finnish, Block Text (PSM 6) - Good if labels are blocks
+            # Pass 3: English (fallback)
+            
+            # Try to use finnish if available, else English
+            langs = ["fin", "eng"]
+            configs = [
+                r'--psm 11', # Sparse text
+                r'--psm 6'   # Block text
+            ]
+            
+            full_text = ""
+            
+            for lang in langs:
+                for config in configs:
+                    try:
+                        text_chunk = pytesseract.image_to_string(img, lang=lang, config=config)
+                        full_text += "\n" + text_chunk
+                    except:
+                        # Fallback if language not found
+                        continue
+            
+            # If nothing worked (e.g. lang error), try default
+            if not full_text.strip():
+                full_text = pytesseract.image_to_string(img, config='--psm 11')
+                
+            text = full_text.upper()
+            
+            # Rule 1: Room Labels (Need 2+)
+            # Patterns allowing for optional punctuation/spaces
+            room_labels = [
+                r'\bOH\b', r'\bOLOHUONE\b', 
+                r'\bMH\b', r'\bMAKUUHUONE\b',
+                r'\bH\b', r'\bHUONE\b', 
+                r'\bK\b', r'\bKEITTI[ÖO]\b', r'\bKT\b', r'\bKEITTOTILA\b', 
+                r'\bKK\b', r'\bKEITTOKOMERO\b', # Added KK
+                r'\bKPH\b', r'\bKH\b', r'\bKYLPYHUONE\b',
+                r'\bWC\b',
+                r'\bET\b', r'\bETEINEN\b',
+                r'\bS\b', r'\bSAUNA\b',
+                r'\bVH\b', r'\bVAATEHUONE\b',
+                r'\bKHH\b', r'\bKODINHOITOHUONE\b',
+                r'\bTK\b', r'\bTEKNINEN\b', r'\bTUULIKAAPPI\b', # Added TK/Tuulikaappi
+                r'\bVAR\b', r'\bVARASTO\b',
+                r'\bP\b', r'\bPARVEKE\b', r'\bLASITETTU\b', r'\bTERASSI\b', r'\bPARVI\b',
+                r'\bRT\b', r'\bRUOKAILUTILA\b', # Added RT
+                r'\bAULA\b', # Added AULA
+                r'\bALK\b', r'\bALKOVI\b', # Added ALK
+                r'\bSK\b', r'\bSIIVOUSKOMERO\b' # Added SK
+            ]
+            
+            label_matches = 0
+            found_labels = []
+            for pattern in room_labels:
+                if re.search(pattern, text):
+                    label_matches += 1
+                    found_labels.append(pattern.replace(r'\b', '').replace(r'\b', ''))
+            
+            # Rule 2: Dimensions (X.xx m x Y.yy m)
+            # Regex for "number[.,]number m x number[.,]number m"
+            # Allowing some flexibility for OCR errors (e.g. 'm' might be missing slightly)
+            dim_pattern = r'\d+[.,]\d+\s*m?\s*[xX]\s*\d+[.,]\d+\s*m?'
+            has_dimensions = bool(re.search(dim_pattern, text))
+            
+            # Rule 3: Area Patterns (43,0 m2)
+            area_pattern = r'\d+[.,]?\d*\s*(m²|m2|M2|M²)'
+            has_area = bool(re.search(area_pattern, text))
+            
+            # Rule 4: Floor/Location Keywords
+            keywords = [
+                r'\d+\.?\s*KERROS', r'SIJAINTIKAAVIO', r'POHJAKUVA', r'HUONEISTO',
+                r'ASUNTO', r'TALO', r'PINTA-ALA', r'ASEMAPIIRROS', r'PIIRUSTUS', 
+                r'SUUNTAA\s*ANTAVA'
+            ]
+            has_keyword = any(re.search(k, text) for k in keywords)
+            
+            # Rule 5: Apartment ID (AS + number)
+            has_apt_id = bool(re.search(r'\bAS\d+\b', text))
+            
+            # Rule 6: Layout Codes (2H+KT)
+            # Structure: Number + H + ...
+            layout_pattern = r'\d+H\s*\+'
+            has_layout_code = bool(re.search(layout_pattern, text))
+            
+            # Decision Logic
+            # Condition A: 2+ Room Labels (Medium Confidence Baseline)
+            cond_a_medium = label_matches >= 2
+            
+            # Condition B: Dimensions OR Information Bucket
+            cond_b = has_dimensions or has_area or has_keyword or has_apt_id or has_layout_code
+            
+            # Condition C: High Confidence Labels (3+) - Ignore Condition B
+            cond_a_high = label_matches >= 3
+            
+            details = []
+            if has_dimensions: details.append("Dimensions")
+            if has_area: details.append("Area")
+            if has_keyword: details.append("Keywords")
+            if has_apt_id: details.append("AptID")
+            if has_layout_code: details.append("LayoutCode")
+            
+            # Logic 1: High Label Count -> Auto Pass
+            if cond_a_high:
+                 return True, f"Matched (High Confidence): {label_matches} labels found ({', '.join(found_labels[:3])}...)"
+            
+            # Logic 2: Medium Label Count + Context -> Pass
+            if cond_a_medium and cond_b:
+                return True, f"Matched (Medium Confidence): {label_matches} labels + ({', '.join(details)})"
+            
+            # Logic 3: Strong Context -> Pass (Layout Code + Metrics)
+            if has_layout_code and (has_area or has_dimensions):
+                 return True, "Matched (Context): Layout Code + Dimensions/Area"
+
+            return False, f"Labels: {label_matches}, Dim: {has_dimensions}, Info: {cond_b}"
+
+        except Exception as e:
+            msg = f"OCR Error: {str(e)}"
+            return False, msg
+
+    def download_images(self, image_data, base_folder, status_callback=None):
+        """
+        image_data: list of dicts {"src": url, "isFloorPlan": bool}
+        base_folder: destination folder for this property
+        status_callback: function(msg) to report status to UI
+        """
+        normal_folder = os.path.join(base_folder, "normal_images")
+        floor_plan_folder = os.path.join(base_folder, "floor_plans")
+        
+        for folder in [normal_folder, floor_plan_folder]:
+            if not os.path.exists(folder):
+                os.makedirs(folder, exist_ok=True)
+            
+        count = 0
+        total_images = len(image_data)
+        
+        for i, item in enumerate(image_data):
+            url = item["src"]
+            initial_fp = item["isFloorPlan"]
+            
+            if status_callback:
+                status_callback({
+                    "type": "progress",
+                    "current": i + 1,
+                    "total": total_images,
+                    "msg": f"Downloading {i+1}/{total_images}..."
+                })
+            
+            try:
+                response = requests.get(url, stream=True, timeout=20)
+                if response.status_code == 200:
+                    ext = "jpg"
+                    if "." in url.split('?')[0]:
+                        potential_ext = url.split('?')[0].split('.')[-1]
+                        if len(potential_ext) <= 4: ext = potential_ext
+                    
+                    filename = f"image_{i+1}.{ext}"
+                    # Temporary save to check color/OCR
+                    temp_path = os.path.join(base_folder, filename)
+                    with open(temp_path, 'wb') as f:
+                        for chunk in response.iter_content(4096):
+                            f.write(chunk)
+                    
+                    # Refine classification
+                    # 1. Color Check (Filter 1)
+                    if status_callback:
+                        status_callback({
+                            "type": "filter",
+                            "step": 1,
+                            "msg": f"Img {i+1}: Analyzing color (B&W check)..."
+                        })
+                    is_bw = self.is_image_grayscale(temp_path)
+                    
+                    # 2. Advanced Content Analysis (Filter 2)
+                    is_advanced_match = False
+                    match_reason = ""
+                    
+                    if status_callback:
+                        status_callback({
+                            "type": "filter",
+                            "step": 2,
+                            "msg": f"Img {i+1}: Analyzing content (Advanced Rules)..."
+                        })
+                    try:
+                        is_advanced_match, match_reason = self.analyze_floor_plan_content(temp_path)
+                        print(f"Image {i+1} analysis: {match_reason}") # Debug log
+                    except Exception as e:
+                        print(f"Analysis failed: {e}")
+
+                    # Decision Logic based on double filter + Rules
+                    # If it's B&W AND Advanced Match -> Very High confidence Floor Plan
+                    # Rule relaxations:
+                    # - If matches advanced rules strongly, color matters less (some floor plans have color)
+                    # - If strict B&W and has *some* content, we might still count it, but let's trust the advanced rules more.
+                    
+                    is_floor_plan = False
+                    reason_log = ""
+                    
+                    if initial_fp:
+                        is_floor_plan = True
+                        reason_log = "Metadata"
+                    elif is_advanced_match:
+                        # Strong rule match overrides color (some floor plans are colored)
+                        is_floor_plan = True
+                        reason_log = f"Advanced Rule ({match_reason})"
+                    elif is_bw and "Labels" in match_reason: 
+                        # If it was B&W but missed some strict rule, but had *some* data? 
+                        # Actually analyze_floor_plan_content returns False if rules aren't met.
+                        # We can fallback to B&W only if we are desperate, but the user complained about accuracy.
+                        # So let's stick to the rules for "Floor Plan" classification to improve precision.
+                        # OR: If is_bw is True, we might look for weak signals?
+                        # For now, let's respect the "Accuracy" request and reply on the Rule Set + Metadata.
+                        # But wait, previous logic was "is_bw AND has_numbers". 
+                        # The new rules are much better than "has_numbers".
+                        pass
+                    
+                    # send final decision to UI for debug/info if needed
+                    if status_callback and is_floor_plan:
+                         status_callback({
+                            "type": "filter",
+                            "step": 3,
+                            "msg": f"Img {i+1}: Classified as Floor Plan! ({reason_log})"
+                        })
+                    
+                    final_folder = floor_plan_folder if is_floor_plan else normal_folder
+                    final_path = os.path.join(final_folder, filename)
+                    
+                    # Move to final destination
+                    if os.path.exists(final_path): os.remove(final_path)
+                    os.rename(temp_path, final_path)
+                    
+                    count += 1
+            except Exception as e:
+                print(f"Failed to download {url}: {e}")
+                
         return count
