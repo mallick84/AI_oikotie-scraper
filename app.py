@@ -184,7 +184,11 @@ if st.button("🚀 Start Scraping"):
             if storage_is_temporary:
                 working_dest = temp_dir
             else:
-                working_dest = destination_folder
+                # Create a timestamped subfolder for this run to isolate data
+                import datetime
+                timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+                working_dest = os.path.join(destination_folder, f"run_{timestamp}")
+                os.makedirs(working_dest, exist_ok=True)
 
             # Progress containers
             progress_bar = st.progress(0)
@@ -313,6 +317,11 @@ if st.button("🚀 Start Scraping"):
                     st.dataframe(display_df)
                     
                     col_export_1, col_export_2, col_export_3 = st.columns(3)
+                    
+                    # Save Excel to the working folder so it gets zipped
+                    excel_path = os.path.join(working_dest, "oikotie_properties.xlsx")
+                    final_df.to_excel(excel_path, index=False)
+                    
                     with col_export_1:
                         excel_data = to_excel(final_df)
                         st.download_button(
